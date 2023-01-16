@@ -23,10 +23,15 @@ jobs:
           release_name: Release ${{ github.ref }}
           draft: false
           prerelease: false
+      - name: Get version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF/refs\/tags\/v/}" >> $GITHUB_OUTPUT
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
-  build-server:
+      version: ${{ steps.get_version.outputs.VERSION }}
+  build-server-darwin:
     runs-on: ubuntu-latest
+    needs: release
     steps:
       - name: Check out Git repository
         uses: actions/checkout@v3
@@ -35,38 +40,47 @@ jobs:
         with:
           go-version: '^1.19'
           cache: true
-      - name: Get version
-        id: get_version
-        run: echo "VERSION=${GITHUB_REF/refs\/tags\/v/}" >> $GITHUB_OUTPUT
       - run: mkdir artifacts
-      - name: download static tcpdump
-        run: |
-          wget https://github.com/eldadru/ksniff/releases/download/v1.6.2/ksniff.zip
-          unzip -d ksniff ksniff.zip
-          cp ksniff/static-tcpdump artifacts/
-          rm -rf ksniff ksniff.zip
       - name: edit package.json version
         run: |
-          jq '.version="${{ steps.get_version.outputs.VERSION }}"' ui/package.json > artifacts/package.json
+          jq '.version="${{ needs.release.outputs.version }}"' ui/package.json > artifacts/package.json
       - name: build server
         run: |
-          make build.darwin
-          mv bin/k8z artifacts/k8z-mac
-          make build.windows
-          mv bin/k8z artifacts/k8z-windows
+          make build.server GOOS=darwin
+          mv bin/* artifacts/
       - name: upload artifact
         uses: actions/upload-artifact@v3
         with:
           name: artifacts
           path: artifacts
-    outputs:
-      version: ${{ steps.get_version.outputs.VERSION }}
-  build-mac:
+  build-server-windows:
+    runs-on: ubuntu-latest
+    needs: release
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v3
+      - name: Install golang
+        uses: actions/setup-go@v3
+        with:
+          go-version: '^1.19'
+          cache: true
+      - run: mkdir artifacts
+      - name: edit package.json version
+        run: |
+          jq '.version="${{ needs.release.outputs.version }}"' ui/package.json > artifacts/package.json
+      - name: build server
+        run: |
+          make build.server GOOS=windows
+          mv bin/* artifacts/
+      - name: upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts
+          path: artifacts
+  build-electron-darwin:
     runs-on: macos-latest
     permissions: write-all
-    needs:
-     - release
-     - build-server
+    needs: build-server-darwin
     steps:
       - name: Check out Git repository
         uses: actions/checkout@v3
@@ -88,11 +102,11 @@ jobs:
           name: artifacts
           path: artifacts
       - run: |
-          mkdir bin
-          mv artifacts/static-tcpdump ./
-          mv artifacts/package.json ui/package.json
-          mv artifacts/k8z-mac bin/k8z
-          chmod +x bin/k8z
+          mkdir -p ui/server
+          mv artifacts/static-tcpdump ./ui/server/
+          mv artifacts/package.json ./ui/package.json
+          mv artifacts/k8z ./ui/server/
+          chmod +x ./ui/server/k8z
       - run: cd ui && yarn && yarn electron:build:pro --mac && ls build
 
       - name: Upload Release Asset For dmg
@@ -101,16 +115,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.release.outputs.upload_url }}
-          asset_path: ui/build/k8z-${{ needs.build-server.outputs.version }}.dmg
-          asset_name: k8z-${{ needs.build-server.outputs.version }}.dmg
+          asset_path: ui/package/k8z-${{ needs.release.outputs.version }}.dmg
+          asset_name: k8z-${{ needs.release.outputs.version }}.dmg
           asset_content_type: application/x-tg
 
   build-win:
     runs-on: windows-latest
     permissions: write-all
-    needs:
-      - release
-      - build-server
+    needs: build-server-windows
     steps:
       - name: Check out Git repository
         uses: actions/checkout@v3
@@ -132,11 +144,11 @@ jobs:
           name: artifacts
           path: artifacts
       - run: |
-          mkdir bin
-          mv artifacts/static-tcpdump ./
+          mkdir -p ./ui/server
+          mv artifacts/static-tcpdump ./ui/server/
           rm ui/package.json
           mv artifacts/package.json ui/package.json
-          mv artifacts/k8z-windows bin/k8z.exe
+          mv artifacts/k8z ./ui/server/k8z.exe
 
       - run: cd ui && yarn && yarn electron:build:pro --win && ls build
 
@@ -146,6 +158,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.release.outputs.upload_url }}
-          asset_path: ui/build/k8z Setup ${{ needs.build-server.outputs.version }}.exe
-          asset_name: k8z Setup ${{ needs.build-server.outputs.version }}.exe
+          asset_path: ui/package/k8z Setup ${{ needs.release.outputs.version }}.exe
+          asset_name: k8z Setup ${{ needs.release.outputs.version }}.exe
           asset_content_type: application/x-tg
